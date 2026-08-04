@@ -37,8 +37,14 @@ TOP_P = 0.9
 # Chọn 0.3 vì: RAG cần factual, ít sáng tạo
 TEMPERATURE = 0.3
 
-# TODO: Chọn LLM model (OpenRouter model ID)
-LLM_MODEL = "openai/gpt-4o-mini"  # hoặc model ":free" nếu chưa có credit
+# Read the answer model from .env instead of coupling generation to embeddings.
+# The default is an OpenAI model id because this workspace uses OPENAI_API_KEY.
+LLM_MODEL = os.getenv('LLM_MODEL', '').strip() or 'gpt-4o-mini'
+OPENROUTER_BASE_URL = os.getenv(
+    'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'
+).rstrip('/')
+NO_EVIDENCE_ANSWER = 'Tôi không thể xác minh thông tin này từ nguồn hiện có.'
+LLM_UNAVAILABLE_ANSWER = 'Không thể tạo câu trả lời lúc này do dịch vụ LLM không khả dụng.'
 
 
 # =============================================================================
@@ -50,7 +56,8 @@ SYSTEM_PROMPT = """Bạn là trợ lý trả lời câu hỏi về dịch vụ v
 
 Quy tắc bắt buộc:
 1. Chỉ sử dụng thông tin từ context được cung cấp — KHÔNG bịa đặt
-2. Mỗi khẳng định phải có trích dẫn ngay sau, ví dụ: [Tuition Fees, 2026]
+2. Mỗi khẳng định phải có trích dẫn số ngay sau, ví dụ: [1] hoặc [2]
+   Số trích dẫn phải khớp chính xác với số thứ tự nguồn trong context
 3. Nếu context không đủ thông tin → trả lời: "Tôi không thể xác minh thông tin này từ nguồn hiện có"
 4. Trả lời bằng tiếng Việt, có cấu trúc rõ ràng theo đoạn văn
 5. Không suy luận hay mở rộng ngoài những gì được nêu trong context"""
@@ -77,7 +84,7 @@ def reorder_for_llm(chunks: list[dict]) -> list[dict]:
     Returns:
         List reordered để maximize LLM attention.
     """
-    # TODO: Implement reordering
+    # Reference outline for the implemented strategy:
     #
     # if len(chunks) <= 2:
     #     return chunks
@@ -85,7 +92,12 @@ def reorder_for_llm(chunks: list[dict]) -> list[dict]:
     # front = chunks[::2]   # index 0, 2, 4 -> đặt ở đầu
     # back = chunks[1::2]   # index 1, 3    -> đặt ở cuối (reversed)
     # return front + back[::-1]
-    raise NotImplementedError("Implement reorder_for_llm")
+    if len(chunks) <= 2:
+        return list(chunks)
+
+    front = chunks[::2]
+    back = chunks[1::2]
+    return front + back[::-1]
 
 
 # =============================================================================
@@ -103,7 +115,7 @@ def format_context(chunks: list[dict]) -> str:
     Returns:
         Formatted context string.
     """
-    # TODO: Implement context formatting
+    # Reference outline for the implemented formatter:
     #
     # context_parts = []
     # for i, chunk in enumerate(chunks, 1):
@@ -114,14 +126,49 @@ def format_context(chunks: list[dict]) -> str:
     #         f"{chunk['content']}\n"
     #     )
     # return "\n---\n".join(context_parts)
-    raise NotImplementedError("Implement format_context")
+    context_parts = []
+    for index, chunk in enumerate(chunks, start=1):
+        metadata = chunk.get('metadata') or {}
+        source = metadata.get('source') or f'Source {index}'
+        doc_type = metadata.get('type') or 'unknown'
+        section = metadata.get('section') or metadata.get('heading') or ''
+        label = f'[{index}] Source: {source} | Type: {doc_type}'
+        if section:
+            label += f' | Section: {section}'
+        context_parts.append(f'{label}\n{chunk.get("content", "").strip()}')
+
+    return '\n\n---\n\n'.join(context_parts)
 
 
 # =============================================================================
 # GENERATION
 # =============================================================================
 
-def generate_with_citation(query: str, top_k: int = TOP_K) -> dict:
+def _llm_client_and_model():
+    '''Prefer OpenAI for answers; use OpenRouter only as a generation fallback.'''
+    from openai import OpenAI
+
+    openrouter_key = os.getenv('OPENROUTER_API_KEY', '').strip()
+    openai_key = os.getenv('OPENAI_API_KEY', '').strip()
+
+    if openai_key and not openai_key.startswith('sk-proj-...'):
+        model = LLM_MODEL.removeprefix('openai/')
+        return OpenAI(api_key=openai_key), model
+
+    if openrouter_key and not openrouter_key.startswith('sk-or-v1-...'):
+        model = LLM_MODEL
+        if '/' not in model:
+            model = f'openai/{model}'
+        return OpenAI(api_key=openrouter_key, base_url=OPENROUTER_BASE_URL), model
+
+    raise RuntimeError('Configure OPENAI_API_KEY or OPENROUTER_API_KEY in .env')
+
+
+def generate_with_citation(
+    query: str,
+    top_k: int = TOP_K,
+    use_reranking: bool = True,
+) -> dict:
     """
     End-to-end RAG generation có citation.
 
@@ -135,6 +182,8 @@ def generate_with_citation(query: str, top_k: int = TOP_K) -> dict:
 
     Args:
         query: Câu hỏi của user
+        top_k: Số chunks tối đa dùng làm evidence
+        use_reranking: Có chạy bước reranking trong Task 9 hay không
 
     Returns:
         {
@@ -143,7 +192,7 @@ def generate_with_citation(query: str, top_k: int = TOP_K) -> dict:
             'retrieval_source': str  # 'hybrid' hoặc 'pageindex'
         }
     """
-    # TODO: Implement generation pipeline
+    # Reference outline for the implemented generation pipeline:
     #
     # # Step 1: Retrieve
     # chunks = retrieve(query, top_k=top_k)
@@ -180,7 +229,57 @@ def generate_with_citation(query: str, top_k: int = TOP_K) -> dict:
     #     "sources": chunks,
     #     "retrieval_source": chunks[0].get("source", "hybrid") if chunks else "none"
     # }
-    raise NotImplementedError("Implement generate_with_citation")
+    if not isinstance(query, str) or not query.strip():
+        return {
+            'answer': NO_EVIDENCE_ANSWER,
+            'sources': [],
+            'retrieval_source': 'none',
+        }
+
+    query = query.strip()
+    chunks = retrieve(query, top_k=top_k, use_reranking=use_reranking)
+    retrieval_source = chunks[0].get('source', 'hybrid') if chunks else 'none'
+
+    if not chunks:
+        return {
+            'answer': NO_EVIDENCE_ANSWER,
+            'sources': [],
+            'retrieval_source': retrieval_source,
+        }
+
+    reordered = reorder_for_llm(chunks)
+    context = format_context(reordered)
+    user_message = (
+        f'Context:\n{context}\n\n---\n\nQuestion: {query}\n\n'
+        'Answer only from the context. Cite every factual claim with the '
+        'matching numeric source marker such as [1] or [2].'
+    )
+
+    try:
+        client, model = _llm_client_and_model()
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': user_message},
+            ],
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
+        )
+        answer = (response.choices[0].message.content or '').strip()
+        if not answer:
+            answer = NO_EVIDENCE_ANSWER
+    except Exception as error:
+        print(f'  WARNING: LLM generation unavailable ({type(error).__name__})')
+        answer = LLM_UNAVAILABLE_ANSWER
+
+    return {
+        'answer': answer,
+        # Keep source order identical to the numbered context so frontend
+        # citation [n] opens sources[n - 1].
+        'sources': reordered,
+        'retrieval_source': retrieval_source,
+    }
 
 
 if __name__ == "__main__":

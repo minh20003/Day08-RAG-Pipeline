@@ -111,14 +111,14 @@ if query:
     with st.chat_message("assistant"):
         with st.spinner("Đang tìm kiếm tài liệu và tổng hợp câu trả lời..."):
             try:
-                # TODO (Học viên): Tích hợp hàm sinh câu trả lời từ Task 10
+                # Task 10 generation pipeline integration
                 # Ví dụ:
                 # from src.task10_generation import generate_with_citation
                 # response = generate_with_citation(query, top_k=top_k)
                 # answer = response["answer"]
                 # sources = response.get("sources", [])
 
-                # Tạm thời mockup để test UI:
+                # Generate the grounded answer and expose its source chunks.
                 from src.task10_generation import generate_with_citation
                 response = generate_with_citation(query, top_k=top_k)
                 answer = response.get("answer", "Chưa thể trả lời.")

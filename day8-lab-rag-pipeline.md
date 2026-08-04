@@ -47,26 +47,6 @@ description: "Học viên xây dựng RAG pipeline 10 bước end-to-end: thu th
 
 ## 👥 1. Quy Mô & Sơ Đồ Phân Vai Nhóm (4–6 Thành Viên)
 
-Tùy theo số lượng thành viên thực tế của từng nhóm (4, 5 hoặc 6 người), nhóm lựa chọn sơ đồ phân công phù hợp bên dưới:
-
-### 🔹 Phương Án A: Nhóm 4 Thành Viên (Cấu Trúc Chuẩn)
-* **Role 1 (Team Leader & RAG Architect)**: Điều phối tiến độ, ghép code tổng hợp (`supervisor.py` & Task 9).
-* **Role 2 (Data & Retrieval Specialist)**: Phụ trách thu thập, chuẩn hoá dữ liệu (Task 1–3) và xây dựng ChromaDB (Task 4–5).
-* **Role 3 (Frontend & Chatbot Developer)**: Xây dựng giao diện Streamlit `app.py` và nối LLM Generation (Task 10).
-* **Role 4 (Evaluation & QA Engineer)**: Tạo `golden_dataset.json` (15 câu hỏi), thực thi RAGAS `eval_pipeline.py` và viết `results.md`.
-
----
-
-### 🔹 Phương Án B: Nhóm 5 Thành Viên (Chuyên Sâu Retrieval)
-Tách phần tìm kiếm (Retrieval) thành 2 vị trí chuyên biệt:
-* **Role 1 (Team Leader & RAG Architect)**: Quản lý chung, ghép code pipeline chính (`supervisor.py` & Task 9).
-* **Role 2 (Data & Dense Search Dev)**: Task 1–3 (Data) + Task 4 (ChromaDB) + Task 5 (Semantic Search & HyDE).
-* **Role 3 (Sparse Search & Advanced Reranking Dev)**: Task 6 (BM25/TF-IDF) + Task 7 (RRF Reranking) + Task 8 (PageIndex Fallback).
-* **Role 4 (Frontend & Chatbot Developer)**: Xây dựng Streamlit Chatbot `app.py` + Task 10 (Generation có Citation).
-* **Role 5 (Evaluation & QA Engineer)**: Bộ câu hỏi `golden_dataset.json` + Đánh giá RAGAS & báo cáo so sánh A/B `results.md`.
-
----
-
 ### 🔹 Phương Án C: Nhóm 6 Thành Viên (Mở Rộng Dữ Liệu & Benchmark)
 Chia nhỏ các công đoạn dữ liệu và kiểm thử chuyên sâu:
 * **Role 1 (Team Leader & RAG Architect)**: Quản lý nhóm, kiến trúc Supervisor và điều phối thuyết trình demo.

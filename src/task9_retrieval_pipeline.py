@@ -25,6 +25,8 @@ Logic:
     điểm số giữa hai nhóm rồi chọn ngưỡng nằm giữa.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .task5_semantic_search import semantic_search
 from .task6_lexical_search import lexical_search
 from .task7_reranking import rerank, rerank_rrf
@@ -38,9 +40,43 @@ from .task8_pageindex_vectorless import pageindex_search
 # TODO: Calibrate threshold này bằng cách tự đo điểm cosine của semantic_search
 # cho câu hỏi liên quan vs câu hỏi lạc đề (xem ghi chú ở trên) — ĐỪNG copy nguyên
 # giá trị mẫu, mỗi corpus/embedding model sẽ cho khoảng điểm khác nhau.
-SCORE_THRESHOLD = 0.3   # Nếu best score (cosine gốc) < threshold → fallback PageIndex
+# Calibrated on this RMIT corpus: min in-domain=0.6056, max out-domain=0.4158.
+SCORE_THRESHOLD = 0.511  # midpoint separates answerable and unrelated probes
 DEFAULT_TOP_K = 5
 RERANK_METHOD = "rrf"  # "cross_encoder" | "mmr" | "rrf"
+
+
+def _run_hybrid_searches(query: str, candidate_count: int) -> tuple[list[dict], list[dict]]:
+    '''Run dense and lexical retrieval concurrently and isolate branch errors.'''
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        dense_future = executor.submit(semantic_search, query, top_k=candidate_count)
+        sparse_future = executor.submit(lexical_search, query, top_k=candidate_count)
+
+        try:
+            dense_results = dense_future.result() or []
+        except Exception as error:
+            print(f'  WARNING: Semantic search unavailable ({error})')
+            dense_results = []
+
+        try:
+            sparse_results = sparse_future.result() or []
+        except Exception as error:
+            print(f'  WARNING: Lexical search unavailable ({error})')
+            sparse_results = []
+
+    return dense_results, sparse_results
+
+
+def _normalize_results(results: list[dict], source: str, top_k: int) -> list[dict]:
+    '''Return the stable payload shape consumed by Task 10.'''
+    normalized = []
+    for item in results[:top_k]:
+        result = dict(item)
+        result.setdefault('metadata', {})
+        result['score'] = float(result.get('score', 0.0))
+        result['source'] = source
+        normalized.append(result)
+    return normalized
 
 
 def retrieve(
@@ -77,7 +113,7 @@ def retrieve(
             'source': str  # 'hybrid' hoặc 'pageindex'
         }
     """
-    # TODO: Implement full retrieval pipeline
+    # Reference implementation outline:
     #
     # Step 1: Song song chạy semantic + lexical
     # dense_results = semantic_search(query, top_k=top_k * 2)
@@ -103,7 +139,49 @@ def retrieve(
     #         return fallback
     #
     # return final_results[:top_k]
-    raise NotImplementedError("Implement retrieve")
+
+    if not isinstance(query, str) or not query.strip() or top_k <= 0:
+        return []
+
+    query = query.strip()
+    candidate_count = top_k * 2
+    dense_results, sparse_results = _run_hybrid_searches(query, candidate_count)
+
+    # RRF fuses ranks without comparing incompatible cosine and BM25 scales.
+    merged = rerank_rrf(
+        [dense_results, sparse_results],
+        top_k=candidate_count,
+    )
+    for item in merged:
+        item['source'] = 'hybrid'
+
+    # Run the configured optional second-stage reranker over fused candidates.
+    if use_reranking and merged:
+        final_results = rerank(
+            query,
+            merged,
+            top_k=top_k,
+            method=RERANK_METHOD,
+        )
+    else:
+        final_results = merged[:top_k]
+
+    # Fallback confidence must use raw dense cosine, never the tiny RRF score.
+    best_dense_score = max(
+        (float(item.get('score', 0.0)) for item in dense_results),
+        default=0.0,
+    )
+    if best_dense_score < score_threshold:
+        try:
+            fallback_results = pageindex_search(query, top_k=top_k)
+        except Exception as error:
+            print(f'  WARNING: PageIndex fallback unavailable ({error})')
+            fallback_results = []
+
+        if fallback_results:
+            return _normalize_results(fallback_results, 'pageindex', top_k)
+
+    return _normalize_results(final_results, 'hybrid', top_k)
 
 
 if __name__ == "__main__":

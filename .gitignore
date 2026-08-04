@@ -13,15 +13,28 @@ venv/
 data/_tmp_pdf/
 
 # Temp / cache
+.cache/
+.demo/
+chroma_db/
 .pytest_cache/
 *.tmp
 pageindex_doc_ids.json
 pageindex_pdfs/
+.pytest_cache/
+*.tmp
+pageindex_doc_ids.json
+pageindex_pdfs/
+chroma_db/
 
 # IDE
 .vscode/
 .idea/
 
+# Node
+node_modules/
+dist/
+
 # OS
 .DS_Store
 Thumbs.db
+/zzz
