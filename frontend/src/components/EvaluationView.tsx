@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import type { BackendSnapshot, ChatMessage, StoredConversation } from "../types";
 import { CountUpValue } from "./CountUpValue";
+import { LatencyRing } from "./charts/LatencyRing";
+import { MetricBar } from "./charts/MetricBar";
 
 interface EvaluationViewProps {
   backend: BackendSnapshot;
@@ -121,7 +123,13 @@ export function EvaluationView({ backend, conversations }: EvaluationViewProps) 
           </p>
         </div>
         <div className={`analytics-connection analytics-connection--${backend.status}`}>
-          <Gauge size={18} />
+          <LatencyRing
+            value={backend.status === "ready" ? Math.min(backend.latencyMs ?? 0, 2000) / 2000 : 0}
+            size={56}
+            stroke={5}
+            label={backend.latencyMs !== null ? `${backend.latencyMs}` : "—"}
+            caption="ms"
+          />
           <div>
             <strong>{backend.status === "ready" ? "Live connection" : "Connection attention"}</strong>
             <span>{backend.lastCheckedAt ? `Cập nhật ${new Date(backend.lastCheckedAt).toLocaleTimeString("vi-VN")}` : "Đang chờ kiểm tra"}</span>
@@ -166,11 +174,11 @@ export function EvaluationView({ backend, conversations }: EvaluationViewProps) 
             </div>
             <div className="analytics-mode-list">
               {analytics.retrievalModes.map(({ mode, label, count }) => {
-                const percentage = analytics.successfulRuns.length ? (count / analytics.successfulRuns.length) * 100 : 0;
+                const ratio = analytics.successfulRuns.length ? count / analytics.successfulRuns.length : 0;
                 return (
                   <div className="analytics-mode-row" key={mode}>
                     <div><Route size={16} /><strong>{label}</strong></div>
-                    <div className="analytics-mode-track"><span style={{ width: `${percentage}%` }} /></div>
+                    <div className="analytics-mode-track"><MetricBar value={ratio} /></div>
                     <b>{count}</b>
                   </div>
                 );

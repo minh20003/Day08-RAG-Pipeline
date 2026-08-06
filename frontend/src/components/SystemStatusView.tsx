@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { BackendSnapshot } from "../types";
 import { CountUpValue } from "./CountUpValue";
+import { LatencyRing } from "./charts/LatencyRing";
 
 interface SystemStatusViewProps {
   backend: BackendSnapshot;
@@ -48,7 +49,13 @@ export function SystemStatusView({ backend, onRefresh }: SystemStatusViewProps) 
           </p>
         </div>
         <div className="system-readiness-ring">
-          <div><strong><CountUpValue value={readiness} suffix="%" /></strong><span>services ready</span></div>
+          <LatencyRing
+            value={readiness / 100}
+            size={102}
+            stroke={10}
+            label={<CountUpValue value={readiness} suffix="%" />}
+            caption={`${readyCount}/${components.length} services`}
+          />
         </div>
       </div>
 

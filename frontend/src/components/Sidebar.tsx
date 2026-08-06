@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   BarChart3,
   BookOpenText,
@@ -11,6 +11,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { ConversationSummary, ViewId } from "../types";
+import { GradientText } from "./liquid/GradientText";
 
 const navigationItems: Array<{
   id: ViewId;
@@ -23,13 +24,47 @@ const navigationItems: Array<{
   { id: "system", label: "Trạng thái hệ thống", icon: Database },
 ];
 
-const NAV_ROW_HEIGHT = 42;
-const NAV_ROW_GAP = 5;
+const SIDEBAR_ID = "campusiq-sidebar";
+const MOBILE_DRAWER_QUERY = "(max-width: 900px)";
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => (
+    typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia(query).matches
+  ));
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return undefined;
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+
+  return matches;
+}
+
+function getFocusableElements(container: HTMLElement) {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter((element) => !element.hasAttribute("inert") && element.getClientRects().length > 0);
+}
 
 interface SidebarProps {
   activeView: ViewId;
   conversations: ConversationSummary[];
   isOpen: boolean;
+  /** The menu control receives focus again after the mobile drawer closes. */
+  returnFocusRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
   onConversationSelect: (conversationId: string) => void;
   onNewChat: () => void;
@@ -40,16 +75,18 @@ export function Sidebar({
   activeView,
   conversations,
   isOpen,
+  returnFocusRef,
   onClose,
   onConversationSelect,
   onNewChat,
   onViewChange,
 }: SidebarProps) {
   const closeTimer = useRef<number | null>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  const isMobileDrawer = useMediaQuery(MOBILE_DRAWER_QUERY);
   const activeIndex = Math.max(0, navigationItems.findIndex((item) => item.id === activeView));
-  const indicatorStyle = {
-    "--nav-active-y": `${activeIndex * (NAV_ROW_HEIGHT + NAV_ROW_GAP)}px`,
-  } as CSSProperties;
 
   useEffect(
     () => () => {
@@ -58,9 +95,61 @@ export function Sidebar({
     [],
   );
 
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!isMobileDrawer || !isOpen) return undefined;
+
+    const sidebar = sidebarRef.current;
+    if (!sidebar) return undefined;
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const frame = window.requestAnimationFrame(() => {
+      closeButtonRef.current?.focus();
+    });
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = getFocusableElements(sidebar);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        sidebar.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+      if (event.shiftKey && (activeElement === first || !sidebar.contains(activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (activeElement === last || !sidebar.contains(activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", handleKeyDown);
+      const focusTarget = returnFocusRef?.current ?? previouslyFocused;
+      if (focusTarget && document.contains(focusTarget)) focusTarget.focus();
+    };
+  }, [isMobileDrawer, isOpen, returnFocusRef]);
+
   const selectView = (view: ViewId) => {
     onViewChange(view);
-    if (!window.matchMedia("(max-width: 900px)").matches) return;
+    if (!isMobileDrawer) return;
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
     closeTimer.current = window.setTimeout(onClose, 130);
   };
@@ -75,19 +164,41 @@ export function Sidebar({
       <button
         className={`sidebar-backdrop ${isOpen ? "is-visible" : ""}`}
         type="button"
+        aria-hidden={!isMobileDrawer || !isOpen}
+        tabIndex={isMobileDrawer && isOpen ? 0 : -1}
         aria-label="Đóng thanh điều hướng"
         onClick={onClose}
       />
-      <aside className={`sidebar ${isOpen ? "is-open" : ""}`}>
+      <aside
+        ref={sidebarRef}
+        id={SIDEBAR_ID}
+        className={`sidebar ${isOpen ? "is-open" : ""}`}
+        role={isMobileDrawer ? "dialog" : undefined}
+        aria-label={isMobileDrawer ? "Thanh điều hướng" : undefined}
+        aria-modal={isMobileDrawer && isOpen ? true : undefined}
+        aria-hidden={isMobileDrawer && !isOpen ? true : undefined}
+        inert={isMobileDrawer && !isOpen}
+        tabIndex={isMobileDrawer ? -1 : undefined}
+      >
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true">
             <Sparkles size={19} strokeWidth={2.2} />
           </div>
           <div>
-            <div className="brand-name">CampusIQ</div>
+            <div className="brand-name">
+              <GradientText
+                colors={["#7c8cff", "#71cfff", "#c5a8ff", "#7c8cff"]}
+                animationSpeed={9}
+                direction="horizontal"
+                yoyo
+              >
+                CampusIQ
+              </GradientText>
+            </div>
             <div className="brand-caption">University intelligence</div>
           </div>
           <button
+            ref={closeButtonRef}
             className="icon-button sidebar-close"
             type="button"
             aria-label="Đóng menu"
@@ -101,7 +212,6 @@ export function Sidebar({
           className="new-chat-button"
           data-liquid-ripple
           data-liquid-surface="micro"
-          data-magnetic
           type="button"
           onClick={onNewChat}
         >
@@ -109,11 +219,14 @@ export function Sidebar({
           Cuộc trò chuyện mới
         </button>
 
-        <nav className="main-navigation" aria-label="Điều hướng chính">
+        <nav
+          className="main-navigation"
+          aria-label="Điều hướng chính"
+          data-active-index={activeIndex}
+        >
           <span
             className="nav-liquid-indicator"
             aria-hidden="true"
-            style={indicatorStyle}
           >
             <span
               key={activeView}

@@ -1,4 +1,5 @@
 import { Menu, MoonStar, PanelRightOpen, Sun } from "lucide-react";
+import type { RefObject } from "react";
 import type { BackendStatus, ThemeMode, ViewId } from "../types";
 
 const viewLabels: Record<ViewId, { title: string; subtitle: string }> = {
@@ -32,7 +33,11 @@ interface TopbarProps {
   backendStatus: BackendStatus;
   theme: ThemeMode;
   isThemeAnimating: boolean;
+  sidebarOpen: boolean;
+  sourcesOpen: boolean;
   sourceCount: number;
+  menuButtonRef?: RefObject<HTMLButtonElement | null>;
+  sourcesButtonRef?: RefObject<HTMLButtonElement | null>;
   onMenuOpen: () => void;
   onSourcesOpen: () => void;
   onThemeToggle: (origin: { x: number; y: number }) => void;
@@ -43,7 +48,11 @@ export function Topbar({
   backendStatus,
   theme,
   isThemeAnimating,
+  sidebarOpen,
+  sourcesOpen,
   sourceCount,
+  menuButtonRef,
+  sourcesButtonRef,
   onMenuOpen,
   onSourcesOpen,
   onThemeToggle,
@@ -53,10 +62,15 @@ export function Topbar({
   return (
     <header className="topbar" data-liquid-surface="macro">
       <button
+        ref={menuButtonRef}
+        id="campusiq-menu-trigger"
         className="icon-button mobile-menu-button"
         data-liquid-ripple
         data-magnetic
         type="button"
+        aria-controls="campusiq-sidebar"
+        aria-expanded={sidebarOpen}
+        aria-haspopup="dialog"
         aria-label="Mở menu"
         onClick={onMenuOpen}
       >
@@ -71,16 +85,26 @@ export function Topbar({
       </div>
 
       <div className="topbar-actions">
-        <span className={`system-health system-health--${backendStatus}`} title={connectionLabels[backendStatus]}>
+        <span
+          className={`system-health system-health--${backendStatus}`}
+          role="status"
+          aria-label={connectionLabels[backendStatus]}
+          title={connectionLabels[backendStatus]}
+        >
           <span className="status-dot" />
-          {connectionLabels[backendStatus]}
+          <span className="system-health__label">{connectionLabels[backendStatus]}</span>
         </span>
         {activeView === "assistant" ? (
           <button
+            ref={sourcesButtonRef}
+            id="campusiq-sources-trigger"
             className="icon-button mobile-sources-button"
             data-liquid-ripple
             data-magnetic
             type="button"
+            aria-controls="campusiq-source-panel"
+            aria-expanded={sourcesOpen}
+            aria-haspopup="dialog"
             aria-label={`Mở ${sourceCount} nguồn tham khảo`}
             onClick={onSourcesOpen}
           >
@@ -90,7 +114,6 @@ export function Topbar({
         ) : null}
         <button
           className={`theme-toggle ${isThemeAnimating ? "is-bursting" : ""}`}
-          data-magnetic
           type="button"
           aria-label={theme === "light" ? "Bật dark mode" : "Bật light mode"}
           aria-pressed={theme === "dark"}
@@ -103,7 +126,7 @@ export function Topbar({
             });
           }}
         >
-          <span className="theme-toggle__icon" aria-hidden="true">
+          <span className="theme-toggle__icon" data-magnetic aria-hidden="true">
             {theme === "light" ? <MoonStar size={18} /> : <Sun size={18} />}
           </span>
         </button>

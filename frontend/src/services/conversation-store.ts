@@ -31,10 +31,17 @@ function isChatMessage(value: unknown): value is ChatMessage {
     typeof message.timestamp === "string" &&
     typeof message.timestampIso === "string" &&
     Number.isFinite(Date.parse(message.timestampIso));
-  const validStatus = message.status === undefined || message.status === "success" || message.status === "error";
+  const validStatus =
+    message.status === undefined ||
+    message.status === "success" ||
+    message.status === "error" ||
+    message.status === "cancelled";
+  const validSourceIds =
+    message.sourceIds === undefined ||
+    (Array.isArray(message.sourceIds) && message.sourceIds.every((sourceId) => typeof sourceId === "string"));
   const validSources = message.sources === undefined || (Array.isArray(message.sources) && message.sources.every(isSourceDocument));
   const validTrace = message.trace === undefined || isRetrievalTrace(message.trace);
-  return basicShape && validStatus && validSources && validTrace;
+  return basicShape && validStatus && validSourceIds && validSources && validTrace;
 }
 
 function isStoredConversation(value: unknown): value is StoredConversation {
@@ -111,11 +118,15 @@ export function toConversationSummaries(conversations: StoredConversation[]): Co
   const formatter = new Intl.RelativeTimeFormat("vi", { numeric: "auto" });
   const now = Date.now();
   return sortConversations(conversations).map((conversation) => {
-    const elapsedMinutes = Math.max(0, Math.round((Date.parse(conversation.updatedAt) - now) / 60_000));
+    const elapsedMinutes = Math.max(0, Math.floor((now - Date.parse(conversation.updatedAt)) / 60_000));
+    const elapsedHours = Math.floor(elapsedMinutes / 60);
+    const elapsedDays = Math.floor(elapsedHours / 24);
     const time =
-      Math.abs(elapsedMinutes) < 60
-        ? formatter.format(elapsedMinutes, "minute")
-        : formatter.format(Math.round(elapsedMinutes / 60), "hour");
+      elapsedMinutes < 60
+        ? formatter.format(-elapsedMinutes, "minute")
+        : elapsedHours < 24
+          ? formatter.format(-elapsedHours, "hour")
+          : formatter.format(-elapsedDays, "day");
     return { id: conversation.id, title: conversation.title, time };
   });
 }

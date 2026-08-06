@@ -3,6 +3,7 @@ export type ThemeMode = "light" | "dark";
 export type MessageRole = "user" | "assistant";
 export type DocumentCategory = "LEGAL" | "NEWS";
 export type RetrievalMethod = "Hybrid" | "Semantic" | "BM25" | "PageIndex";
+export type RagClientErrorCode = "timeout" | "aborted" | "network" | "http" | "invalid-response";
 
 export interface SourceDocument {
   id: string;
@@ -13,7 +14,7 @@ export interface SourceDocument {
   excerpt: string;
   content: string;
   year: number;
-  url?: string;
+  url?: string | null;
   verified: boolean;
   chunks: number;
   indexedAt: string;
@@ -35,7 +36,7 @@ export interface ChatMessage {
   trace?: RetrievalTrace;
   timestamp: string;
   timestampIso: string;
-  status?: "success" | "error";
+  status?: "success" | "error" | "cancelled";
 }
 
 export interface ConversationSummary {
@@ -76,6 +77,23 @@ export interface RagResponse {
   trace: RetrievalTrace;
 }
 
+export interface RagRequestOptions {
+  signal?: AbortSignal;
+}
+
+export class RagClientError extends Error {
+  readonly name = "RagClientError";
+
+  constructor(
+    readonly code: RagClientErrorCode,
+    message: string,
+    readonly status?: number,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+  }
+}
+
 export interface ComponentHealth {
   status: 'ready' | 'waiting';
   detail: string;
@@ -89,7 +107,7 @@ export interface HealthResponse {
 }
 
 export interface RagClient {
-  query(input: RagQuery): Promise<RagResponse>;
-  health(): Promise<HealthResponse>;
-  listDocuments(): Promise<SourceDocument[]>;
+  query(input: RagQuery, options?: RagRequestOptions): Promise<RagResponse>;
+  health(options?: RagRequestOptions): Promise<HealthResponse>;
+  listDocuments(options?: RagRequestOptions): Promise<SourceDocument[]>;
 }

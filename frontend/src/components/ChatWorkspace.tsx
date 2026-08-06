@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useRef,
   useState,
@@ -9,10 +10,8 @@ import {
 import {
   Bot,
   Check,
-  ChevronDown,
   Clipboard,
   CornerDownLeft,
-  Paperclip,
   RefreshCw,
   Send,
   Sparkles,
@@ -22,6 +21,9 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 import type { ChatMessage } from "../types";
+import { useReducedMotion } from "../hooks/useReducedMotion";
+import { SkeletonCard } from "./liquid/SkeletonCard";
+import { TraceTimeline } from "./charts/TraceTimeline";
 
 interface ChatWorkspaceProps {
   input: string;
@@ -34,6 +36,9 @@ interface ChatWorkspaceProps {
   onSubmit: () => void;
   onSuggestion: (prompt: string) => void;
   onTopKChange: (value: number) => void;
+  onCancel: () => void;
+  onRetry: (messageId: string) => void;
+  onRegenerate: (messageId: string) => void;
 }
 
 interface AssistantContentProps {
@@ -51,72 +56,20 @@ const TOP_K_OPTIONS = [3, 4, 5, 6, 8, 10];
 const RAG_STAGES = ["Semantic", "BM25", "RRF", "LLM"];
 
 function TopKControl({ value, onChange }: TopKControlProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const controlRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isOpen) return undefined;
-
-    const closeOnOutsidePress = (event: PointerEvent) => {
-      if (!controlRef.current?.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setIsOpen(false);
-    };
-
-    document.addEventListener("pointerdown", closeOnOutsidePress);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePress);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [isOpen]);
-
-  const selectTopK = (nextValue: number) => {
-    onChange(nextValue);
-    setIsOpen(false);
-  };
-
   return (
-    <div ref={controlRef} className="top-k-control">
-      <button
-        className="top-k-trigger"
-        data-liquid-ripple
-        data-magnetic
-        type="button"
-        aria-label={`Số nguồn top k: ${value}`}
-        aria-expanded={isOpen}
-        aria-haspopup="listbox"
-        onClick={() => setIsOpen((current) => !current)}
+    <label className="top-k-control">
+      <span className="top-k-label">top_k</span>
+      <select
+        className="top-k-select"
+        value={value}
+        aria-label={`Số nguồn tham chiếu: ${value}`}
+        onChange={(event) => onChange(Number(event.target.value))}
       >
-        <span className="top-k-label">top_k</span>
-        <strong>{value}</strong>
-        <ChevronDown className={isOpen ? "is-open" : ""} size={15} aria-hidden="true" />
-      </button>
-
-      {isOpen ? (
-        <div className="top-k-menu" role="listbox" aria-label="Số nguồn top k">
-          <span className="top-k-menu-title">Nguồn tham chiếu</span>
-          <div className="top-k-options">
-            {TOP_K_OPTIONS.map((option) => (
-              <button
-                key={option}
-                className={option === value ? "is-selected" : ""}
-                data-liquid-ripple
-                type="button"
-                role="option"
-                aria-selected={option === value}
-                onClick={() => selectTopK(option)}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </div>
+        {TOP_K_OPTIONS.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -195,7 +148,7 @@ function LiquidOrb() {
   );
 }
 
-function LoadingMessage() {
+function LoadingMessage({ onCancel }: { onCancel: () => void }) {
   return (
     <motion.div
       className="message-row assistant-row"
@@ -228,9 +181,40 @@ function LoadingMessage() {
             </span>
           ))}
         </div>
+        <SkeletonCard lines={2} widths={["86%", "62%"]} />
+        <button className="loading-cancel" data-liquid-ripple type="button" onClick={onCancel}>
+          Hủy
+        </button>
       </div>
     </motion.div>
   );
+}
+
+function getConversationDayKey(timestampIso: string) {
+  const date = new Date(timestampIso);
+  if (Number.isNaN(date.valueOf())) return timestampIso;
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function formatConversationDate(timestampIso: string) {
+  const date = new Date(timestampIso);
+  if (Number.isNaN(date.valueOf())) return "Lịch sử trò chuyện";
+
+  const now = new Date();
+  const toDayNumber = (value: Date) => Date.UTC(
+    value.getFullYear(),
+    value.getMonth(),
+    value.getDate(),
+  ) / 86_400_000;
+  const daysAgo = toDayNumber(now) - toDayNumber(date);
+  if (daysAgo === 0) return "Hôm nay";
+  if (daysAgo === 1) return "Hôm qua";
+
+  return new Intl.DateTimeFormat("vi-VN", {
+    day: "numeric",
+    month: "long",
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).format(date);
 }
 
 export function ChatWorkspace({
@@ -244,14 +228,24 @@ export function ChatWorkspace({
   onSubmit,
   onSuggestion,
   onTopKChange,
+  onCancel,
+  onRetry,
+  onRegenerate,
 }: ChatWorkspaceProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, "up" | "down">>({});
   const conversationEndRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotion();
+  const latestAssistantMessageId = [...messages].reverse().find(
+    (message) => message.role === "assistant",
+  )?.id;
 
   useEffect(() => {
-    conversationEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [isLoading, messages.length]);
+    conversationEndRef.current?.scrollIntoView?.({
+      behavior: reducedMotion ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [isLoading, messages.length, reducedMotion]);
 
   const submitForm = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -278,9 +272,6 @@ export function ChatWorkspace({
   return (
     <section className="chat-workspace">
       <div className="chat-scroll-region">
-        <div className="conversation-date">
-          <span>Hôm nay</span>
-        </div>
         <div className="message-list">
           {messages.length === 0 ? (
             <div className="chat-empty-state">
@@ -306,8 +297,23 @@ export function ChatWorkspace({
               </div>
             </div>
           ) : (
-            messages.map((message) =>
-              message.role === "user" ? (
+            messages.map((message, index) => {
+              const previousMessage = messages[index - 1];
+              const isNewDay =
+                !previousMessage ||
+                getConversationDayKey(previousMessage.timestampIso) !== getConversationDayKey(message.timestampIso);
+              const isRecoverable = message.status === "error" || message.status === "cancelled";
+              const canRegenerate =
+                message.id === latestAssistantMessageId && message.status === "success";
+
+              return (
+                <Fragment key={message.id}>
+                  {isNewDay ? (
+                    <div className="conversation-date">
+                      <span>{formatConversationDate(message.timestampIso)}</span>
+                    </div>
+                  ) : null}
+                  {message.role === "user" ? (
                 <motion.div
                   key={message.id}
                   className="message-row user-row"
@@ -334,7 +340,16 @@ export function ChatWorkspace({
                   <div className="message-avatar assistant-avatar">
                     <Sparkles size={16} />
                   </div>
-                  <div className={`assistant-message ${message.status === "error" ? "is-error" : ""}`} data-liquid-surface="micro">
+                  <div
+                    className={`assistant-message ${
+                      message.status === "error"
+                        ? "is-error"
+                        : message.status === "cancelled"
+                          ? "is-cancelled"
+                          : ""
+                    }`}
+                    data-liquid-surface="micro"
+                  >
                     <div className="assistant-label">
                       <span>CampusIQ</span>
                       <time>{message.timestamp}</time>
@@ -343,86 +358,94 @@ export function ChatWorkspace({
                     {message.trace ? (
                       <div className="retrieval-trace">
                         <span className="trace-label">Trace</span>
-                        {message.trace.steps.map((step) => (
-                          <span key={step} className="trace-chip">
-                            {step}
-                          </span>
-                        ))}
+                        <TraceTimeline steps={message.trace.steps} />
                         <span className="trace-latency">{message.trace.latency}</span>
                       </div>
                     ) : null}
-                    {message.status !== "error" ? <div className="message-actions">
-                      <button data-liquid-ripple type="button" onClick={() => void copyMessage(message)}>
-                        {copiedMessageId === message.id ? (
-                          <Check size={14} />
-                        ) : (
-                          <Clipboard size={14} />
-                        )}
-                        {copiedMessageId === message.id ? "Đã sao chép" : "Sao chép"}
-                      </button>
-                      <button
-                        className={feedback[message.id] === "up" ? "is-selected" : ""}
-                        data-liquid-ripple
-                        type="button"
-                        aria-label="Câu trả lời hữu ích"
-                        onClick={() =>
-                          setFeedback((current) => ({ ...current, [message.id]: "up" }))
-                        }
-                      >
-                        <ThumbsUp size={14} /> Hữu ích
-                      </button>
-                      <button
-                        className={feedback[message.id] === "down" ? "is-selected" : ""}
-                        data-liquid-ripple
-                        type="button"
-                        aria-label="Câu trả lời không hữu ích"
-                        onClick={() =>
-                          setFeedback((current) => ({ ...current, [message.id]: "down" }))
-                        }
-                      >
-                        <ThumbsDown size={14} /> Không hữu ích
-                      </button>
-                      <button
-                        data-liquid-ripple
-                        type="button"
-                        onClick={() => onSuggestion(messages.at(-2)?.content ?? "")}
-                      >
-                        <RefreshCw size={14} /> Tạo lại
-                      </button>
-                    </div> : null}
+                    {isRecoverable ? (
+                      <div className="message-actions message-actions--recovery">
+                        <button
+                          data-liquid-ripple
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => onRetry(message.id)}
+                        >
+                          <RefreshCw size={14} /> Thử lại
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="message-actions">
+                        <button data-liquid-ripple type="button" onClick={() => void copyMessage(message)}>
+                          {copiedMessageId === message.id ? (
+                            <Check size={14} />
+                          ) : (
+                            <Clipboard size={14} />
+                          )}
+                          {copiedMessageId === message.id ? "Đã sao chép" : "Sao chép"}
+                        </button>
+                        <button
+                          className={feedback[message.id] === "up" ? "is-selected" : ""}
+                          data-liquid-ripple
+                          type="button"
+                          aria-label="Câu trả lời hữu ích"
+                          onClick={() =>
+                            setFeedback((current) => ({ ...current, [message.id]: "up" }))
+                          }
+                        >
+                          <ThumbsUp size={14} /> Hữu ích
+                        </button>
+                        <button
+                          className={feedback[message.id] === "down" ? "is-selected" : ""}
+                          data-liquid-ripple
+                          type="button"
+                          aria-label="Câu trả lời không hữu ích"
+                          onClick={() =>
+                            setFeedback((current) => ({ ...current, [message.id]: "down" }))
+                          }
+                        >
+                          <ThumbsDown size={14} /> Không hữu ích
+                        </button>
+                        {canRegenerate ? (
+                          <button
+                            data-liquid-ripple
+                            type="button"
+                            disabled={isLoading}
+                            onClick={() => onRegenerate(message.id)}
+                          >
+                            <RefreshCw size={14} /> Tạo lại
+                          </button>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
-                </motion.div>
-              ),
-            )
+                  </motion.div>
+                  )}
+                </Fragment>
+              );
+            })
           )}
-          {isLoading ? <LoadingMessage /> : null}
+          {isLoading ? <LoadingMessage onCancel={onCancel} /> : null}
           <div ref={conversationEndRef} aria-hidden="true" />
         </div>
       </div>
 
       <div className="composer-dock">
-        <div className="suggestion-row">
-          {suggestions.map((prompt) => (
-            <button
-              key={prompt}
-              data-liquid-ripple
-              data-magnetic
-              type="button"
-              onClick={() => onSuggestion(prompt)}
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
+        {messages.length > 0 && suggestions.length > 0 ? (
+          <div className="suggestion-row">
+            {suggestions.map((prompt) => (
+              <button
+                key={prompt}
+                data-liquid-ripple
+                data-magnetic
+                type="button"
+                onClick={() => onSuggestion(prompt)}
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <form className="composer" data-liquid-surface="macro" onSubmit={submitForm}>
-          <button
-            className="composer-tool"
-            data-liquid-ripple
-            type="button"
-            aria-label="Đính kèm tài liệu"
-          >
-            <Paperclip size={18} />
-          </button>
           <textarea
             rows={1}
             value={input}

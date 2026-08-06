@@ -1,22 +1,30 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { flushSync } from "react-dom";
 import { X } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { ChatWorkspace } from "./components/ChatWorkspace";
-import { EvaluationView } from "./components/EvaluationView";
-import { KnowledgeBaseView } from "./components/KnowledgeBaseView";
 import { MotionProvider } from "./components/MotionProvider";
 import { Sidebar } from "./components/Sidebar";
 import { SourcePanel } from "./components/SourcePanel";
-import { SystemStatusView } from "./components/SystemStatusView";
 import { Topbar } from "./components/Topbar";
+import { GlassBackdrop } from "./components/liquid/GlassBackdrop";
+
+const KnowledgeBaseView = lazy(() =>
+  import("./components/KnowledgeBaseView").then((m) => ({ default: m.KnowledgeBaseView })),
+);
+const EvaluationView = lazy(() =>
+  import("./components/EvaluationView").then((m) => ({ default: m.EvaluationView })),
+);
+const SystemStatusView = lazy(() =>
+  import("./components/SystemStatusView").then((m) => ({ default: m.SystemStatusView })),
+);
 import {
   loadStoredConversations,
   toConversationSummaries,
   upsertStoredConversation,
 } from "./services/conversation-store";
-import { ragClient } from "./services/rag-client";
+import { isRagClientError, ragClient } from "./services/rag-client";
 import type {
   BackendSnapshot,
   ChatMessage,
@@ -88,7 +96,39 @@ function createTimestamp() {
 }
 
 function getErrorMessage(reason: unknown) {
+  if (isRagClientError(reason)) {
+    switch (reason.code) {
+      case "timeout":
+        return "Máy chủ mất quá lâu để phản hồi. Hãy thử lại.";
+      case "aborted":
+        return "Yêu cầu đã được hủy.";
+      case "network":
+        return "Bạn đang ngoại tuyến hoặc RAG API chưa chạy.";
+      case "invalid-response":
+        return "RAG API trả về dữ liệu không hợp lệ.";
+      default:
+        return reason.message;
+    }
+  }
   return reason instanceof Error ? reason.message : "Không thể kết nối RAG API.";
+}
+
+function getChatErrorContent(reason: unknown) {
+  if (isRagClientError(reason)) {
+    switch (reason.code) {
+      case "timeout":
+        return "Yêu cầu mất quá lâu để hoàn tất. Bạn có thể thử lại.";
+      case "aborted":
+        return "Đã hủy yêu cầu này. Bạn có thể thử lại khi sẵn sàng.";
+      case "network":
+        return "Không thể kết nối RAG API. Kiểm tra kết nối rồi thử lại.";
+      case "invalid-response":
+        return "RAG API trả về dữ liệu không đúng định dạng. Bạn có thể thử lại.";
+      default:
+        return "RAG API trả về lỗi. Bạn có thể thử lại.";
+    }
+  }
+  return "Không thể kết nối hệ thống truy xuất lúc này. Bạn có thể thử lại.";
 }
 
 function makeSuggestions(documents: SourceDocument[]) {
@@ -103,8 +143,24 @@ function makeSuggestions(documents: SourceDocument[]) {
 function getLastResponseSources(messages: ChatMessage[]) {
   return [...messages]
     .reverse()
-    .find((message) => message.role === "assistant" && message.status !== "error" && message.sources?.length)
+    .find((message) => (
+      message.role === "assistant" &&
+      message.status !== "error" &&
+      message.status !== "cancelled" &&
+      message.sources?.length
+    ))
     ?.sources ?? [];
+}
+
+function ViewLoadingFallback() {
+  return (
+    <div className="content-view">
+      <div className="liquid-view-loading">
+        <span className="liquid-view-loading__pulse" aria-hidden="true" />
+        <span>Đang tải chế độ xem…</span>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -125,6 +181,11 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID());
   const [conversations, setConversations] = useState<StoredConversation[]>(loadStoredConversations);
   const refreshRequestId = useRef(0);
+  const refreshControllerRef = useRef<AbortController | null>(null);
+  const chatControllerRef = useRef<AbortController | null>(null);
+  const chatRequestId = useRef(0);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const sourcesButtonRef = useRef<HTMLButtonElement>(null);
 
   const suggestions = useMemo(() => makeSuggestions(backend.documents), [backend.documents]);
   const conversationSummaries = useMemo(() => toConversationSummaries(conversations), [conversations]);
@@ -140,15 +201,18 @@ export default function App() {
   }, [toast]);
 
   const refreshBackend = useCallback(async () => {
+    refreshControllerRef.current?.abort();
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
     const requestId = ++refreshRequestId.current;
     const startedAt = performance.now();
     setBackend((current) => ({ ...current, isRefreshing: true, error: null }));
 
     const [healthResult, documentsResult] = await Promise.allSettled([
-      ragClient.health(),
-      ragClient.listDocuments(),
+      ragClient.health({ signal: controller.signal }),
+      ragClient.listDocuments({ signal: controller.signal }),
     ]);
-    if (requestId !== refreshRequestId.current) return;
+    if (controller.signal.aborted || requestId !== refreshRequestId.current) return;
 
     const health = healthResult.status === "fulfilled" ? healthResult.value : null;
     const documents = documentsResult.status === "fulfilled" ? documentsResult.value : null;
@@ -167,7 +231,7 @@ export default function App() {
     setBackend((current) => ({
       status,
       isRefreshing: false,
-      health: health ?? current.health,
+      health,
       documents: documents ?? current.documents,
       lastCheckedAt: new Date().toISOString(),
       latencyMs: Math.round(performance.now() - startedAt),
@@ -183,10 +247,15 @@ export default function App() {
     const interval = window.setInterval(refreshWhenVisible, BACKEND_POLL_INTERVAL);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
+      refreshControllerRef.current?.abort();
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [refreshBackend]);
+
+  useEffect(() => () => {
+    chatControllerRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!messages.some((message) => message.role === "user")) return;
@@ -254,20 +323,31 @@ export default function App() {
     [isThemeAnimating, theme],
   );
 
-  const submitQuery = useCallback(async () => {
-    const query = input.trim();
+  const requestAnswer = useCallback(async (
+    query: string,
+    options: { appendUser: boolean; replaceMessageId?: string },
+  ) => {
     if (!query || isLoading) return;
-    const userTime = createTimestamp();
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: query,
-      ...userTime,
-    };
+
+    chatControllerRef.current?.abort();
+    const controller = new AbortController();
+    chatControllerRef.current = controller;
+    const requestId = ++chatRequestId.current;
+
+    if (options.appendUser) {
+      const userTime = createTimestamp();
+      const userMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: query,
+        ...userTime,
+      };
+      setMessages((current) => [...current, userMessage]);
+    } else if (options.replaceMessageId) {
+      setMessages((current) => current.filter((message) => message.id !== options.replaceMessageId));
+    }
 
     setActiveView("assistant");
-    setMessages((current) => [...current, userMessage]);
-    setInput("");
     setIsLoading(true);
 
     try {
@@ -276,7 +356,10 @@ export default function App() {
         conversationId,
         topK,
         useReranking: true,
-      });
+      }, { signal: controller.signal });
+
+      if (controller.signal.aborted || requestId !== chatRequestId.current) return;
+
       const assistantTime = createTimestamp();
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -292,26 +375,52 @@ export default function App() {
       setSources(response.sources);
       setSelectedSourceId(response.sources[0]?.id ?? null);
     } catch (error) {
+      if (requestId !== chatRequestId.current) return;
       const errorTime = createTimestamp();
-      const message = getErrorMessage(error);
+      const cancelled = isRagClientError(error) && error.code === "aborted";
       setMessages((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "Không thể kết nối hệ thống truy xuất lúc này. Vui lòng kiểm tra RAG API và thử lại.",
-          trace: { steps: ["API error"], latency: "—", mode: "none" },
-          status: "error",
+          content: getChatErrorContent(error),
+          trace: { steps: [cancelled ? "Request cancelled" : "API error"], latency: "—", mode: "none" },
+          status: cancelled ? "cancelled" : "error",
           ...errorTime,
         },
       ]);
       setSources([]);
-      setToast(message);
-      void refreshBackend();
+      setSelectedSourceId(null);
+      setToast(getErrorMessage(error));
+      if (!cancelled) void refreshBackend();
     } finally {
-      setIsLoading(false);
+      if (requestId === chatRequestId.current) {
+        setIsLoading(false);
+        chatControllerRef.current = null;
+      }
     }
-  }, [conversationId, input, isLoading, refreshBackend, topK]);
+  }, [conversationId, isLoading, refreshBackend, topK]);
+
+  const submitQuery = useCallback(() => {
+    const query = input.trim();
+    if (!query || isLoading) return;
+    setInput("");
+    void requestAnswer(query, { appendUser: true });
+  }, [input, isLoading, requestAnswer]);
+
+  const cancelQuery = useCallback(() => {
+    chatControllerRef.current?.abort();
+  }, []);
+
+  const retryAnswer = useCallback((messageId: string) => {
+    if (isLoading) return;
+    const answerIndex = messages.findIndex((message) => message.id === messageId);
+    const query = answerIndex > 0 && messages[answerIndex - 1]?.role === "user"
+      ? messages[answerIndex - 1].content
+      : "";
+    if (!query) return;
+    void requestAnswer(query, { appendUser: false, replaceMessageId: messageId });
+  }, [isLoading, messages, requestAnswer]);
 
   const startNewChat = () => {
     if (isLoading) {
@@ -325,6 +434,7 @@ export default function App() {
     setInput("");
     setActiveView("assistant");
     setSidebarOpen(false);
+    setSourcesOpen(false);
     setToast("Đã tạo cuộc trò chuyện mới");
   };
 
@@ -342,7 +452,24 @@ export default function App() {
     setSelectedSourceId(restoredSources[0]?.id ?? null);
     setInput("");
     setActiveView("assistant");
+    setSidebarOpen(false);
   };
+
+  const openSidebar = useCallback(() => {
+    setSourcesOpen(false);
+    setSidebarOpen(true);
+  }, []);
+
+  const openSources = useCallback(() => {
+    setSidebarOpen(false);
+    setSourcesOpen(true);
+  }, []);
+
+  const changeView = useCallback((view: ViewId) => {
+    setActiveView(view);
+    setSidebarOpen(false);
+    if (view !== "assistant") setSourcesOpen(false);
+  }, []);
 
   const openCitation = (messageId: string, citationNumber: number) => {
     const messageSources = messages.find((message) => message.id === messageId)?.sources ?? [];
@@ -350,17 +477,29 @@ export default function App() {
     if (!source) return;
     setSources(messageSources);
     setSelectedSourceId(source.id);
-    setSourcesOpen(true);
+    openSources();
   };
 
   const renderActiveView = () => {
     switch (activeView) {
       case "library":
-        return <KnowledgeBaseView documents={backend.documents} status={backend.status} error={backend.error} onRetry={() => void refreshBackend()} />;
+        return (
+          <Suspense fallback={<ViewLoadingFallback />}>
+            <KnowledgeBaseView documents={backend.documents} status={backend.status} error={backend.error} onRetry={() => void refreshBackend()} />
+          </Suspense>
+        );
       case "evaluation":
-        return <EvaluationView backend={backend} conversations={conversations} />;
+        return (
+          <Suspense fallback={<ViewLoadingFallback />}>
+            <EvaluationView backend={backend} conversations={conversations} />
+          </Suspense>
+        );
       case "system":
-        return <SystemStatusView backend={backend} onRefresh={() => void refreshBackend()} />;
+        return (
+          <Suspense fallback={<ViewLoadingFallback />}>
+            <SystemStatusView backend={backend} onRefresh={() => void refreshBackend()} />
+          </Suspense>
+        );
       default:
         return (
           <ChatWorkspace
@@ -370,7 +509,10 @@ export default function App() {
             suggestions={suggestions}
             topK={topK}
             onCitation={openCitation}
+            onCancel={cancelQuery}
             onInputChange={setInput}
+            onRegenerate={retryAnswer}
+            onRetry={retryAnswer}
             onSubmit={() => void submitQuery()}
             onSuggestion={setInput}
             onTopKChange={setTopK}
@@ -382,7 +524,8 @@ export default function App() {
   const isAssistantView = activeView === "assistant";
 
   return (
-    <MotionProvider paused={isThemeAnimating}>
+    <MotionConfig reducedMotion="user">
+      <MotionProvider paused={isThemeAnimating}>
       <motion.div
         className={`app-shell ${isAssistantView ? "" : "app-shell--wide"}`}
         initial={{ opacity: 0, scale: 0.992 }}
@@ -395,14 +538,16 @@ export default function App() {
           <span className="liquid-lake__caustics" />
           <span className="liquid-cursor-lens" />
         </div>
-        <Sidebar
+        <GlassBackdrop theme={theme} />
+          <Sidebar
           activeView={activeView}
           conversations={conversationSummaries}
-          isOpen={sidebarOpen}
+            isOpen={sidebarOpen}
+            returnFocusRef={menuButtonRef}
           onClose={() => setSidebarOpen(false)}
           onConversationSelect={selectConversation}
           onNewChat={startNewChat}
-          onViewChange={setActiveView}
+            onViewChange={changeView}
         />
 
         <main className="main-column">
@@ -411,9 +556,13 @@ export default function App() {
             backendStatus={backend.status}
             theme={theme}
             isThemeAnimating={isThemeAnimating}
+            sidebarOpen={sidebarOpen}
+            sourcesOpen={sourcesOpen}
             sourceCount={sources.length}
-            onMenuOpen={() => setSidebarOpen(true)}
-            onSourcesOpen={() => setSourcesOpen(true)}
+            menuButtonRef={menuButtonRef}
+            sourcesButtonRef={sourcesButtonRef}
+            onMenuOpen={openSidebar}
+            onSourcesOpen={openSources}
             onThemeToggle={handleThemeToggle}
           />
           <AnimatePresence mode="wait" initial={false}>
@@ -432,7 +581,10 @@ export default function App() {
 
         {isAssistantView ? (
           <SourcePanel
+            backendStatus={backend.status}
             isOpen={sourcesOpen}
+            pageIndexHealth={backend.health?.components.pageindex ?? null}
+            returnFocusRef={sourcesButtonRef}
             selectedSourceId={selectedSourceId}
             sources={sources}
             onClose={() => setSourcesOpen(false)}
@@ -473,6 +625,7 @@ export default function App() {
           </div>
         ) : null}
       </motion.div>
-    </MotionProvider>
+      </MotionProvider>
+    </MotionConfig>
   );
 }
